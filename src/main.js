@@ -108,6 +108,8 @@ function parseArgs(rawArgs) {
     createMr:         flags.has("--create-mr"),
     // --create-issue  — go straight to issue creation
     createIssue:      flags.has("--create-issue"),
+    // --review  — run cr review on all primary branches of the epic
+    review:           flags.has("--review"),
     // Issue creation params
     issueProject:     options.issueProject     ?? null,
     issueTitle:       options.issueTitle       ?? null,
@@ -221,6 +223,7 @@ export async function main() {
       checkout:         opts.checkout,
       createMr:         opts.createMr,
       createIssue:      opts.createIssue,
+      review:           opts.review,
       target:           opts.target,
       title:            opts.title,
       description:      opts.description,

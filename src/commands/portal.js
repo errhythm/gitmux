@@ -1,6 +1,6 @@
 import { basename } from "path";
 import { execSync } from "child_process";
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 import chalk from "chalk";
 import { Listr } from "listr2";
@@ -143,6 +143,22 @@ function printEpicIssues(issues, primaryBranches = {}) {
 function openUrl(url) {
   const cmd = process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
   try { execSync(`${cmd} "${url}"`, { stdio: "ignore" }); } catch { }
+}
+
+// ── CodeRabbit CLI detection ───────────────────────────────────────────────────
+// Returns true if the `cr` (or `coderabbit`) CLI is available on $PATH.
+function isCrAvailable() {
+  try {
+    execSync("cr --version", { stdio: "pipe" });
+    return true;
+  } catch {
+    try {
+      execSync("coderabbit --version", { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 // ── Issue branches ─────────────────────────────────────────────────────────────
@@ -761,6 +777,127 @@ async function cmdEpicCheckout(epicIssues, glabRepos, { autoConfirm = false } = 
   console.log();
 }
 
+// ── Epic CR review ────────────────────────────────────────────────────────────
+// Runs `cr --base <primaryBranch>` sequentially in each issue's local repo.
+// Uses spawn with stdio:inherit so cr's rich output flows directly to terminal.
+async function cmdEpicCrReview(epicIssues, glabRepos, portalConfig = {}) {
+  const baseBranch = portalConfig.defaultBaseBranch ?? "develop";
+  const primaryBranches = loadConfig().portal?.primaryBranches ?? {};
+
+  const candidates = epicIssues.map((issue) => {
+    const ref = issue.references?.full ?? "";
+    const [projectPath] = ref.split("#");
+    const primary = primaryBranches[issueConfigKey(issue)] ?? null;
+    const localRepo = findLocalRepo(glabRepos, projectPath);
+    return { issue, projectPath, primary, localRepo };
+  });
+
+  const ready = candidates.filter((c) => c.primary && c.localRepo);
+  const skipped = candidates.filter((c) => !c.primary || !c.localRepo);
+
+  if (ready.length === 0) {
+    console.log("  " + p.muted("No issues ready for review. Set primary branches first.\n"));
+    return;
+  }
+
+  if (skipped.length > 0) {
+    const maxSkip = Math.max(...skipped.map((c) => (c.localRepo?.name ?? c.projectPath.split("/").pop()).length), 4);
+    for (const c of skipped) {
+      const name = (c.localRepo?.name ?? c.projectPath.split("/").pop()).padEnd(maxSkip);
+      const reason = !c.primary ? "no primary set" : "no local repo";
+      console.log("  " + p.muted("○") + "  " + p.muted(name + "  " + reason));
+    }
+    console.log();
+  }
+
+  console.log(
+    boxen(
+      ready
+        .map(({ localRepo, primary }) =>
+          "  " + p.white(localRepo.name.padEnd(24)) + colorBranch(primary),
+        )
+        .join("\n"),
+      {
+        padding: { top: 1, bottom: 1, left: 1, right: 2 },
+        borderStyle: "round",
+        borderColor: "#334155",
+        title: p.muted(" cr review preview "),
+        titleAlignment: "right",
+      },
+    ),
+  );
+  console.log();
+
+  const confirmed = await confirm({
+    message: p.white("Run ") + p.yellow("cr") + p.white(" review on ") + p.cyan(String(ready.length)) + p.white(` repo${ready.length !== 1 ? "s" : ""}?`),
+    default: true,
+    theme: THEME,
+  });
+  console.log();
+  if (!confirmed) return;
+
+  // Detect which binary to use (cr alias or full coderabbit name)
+  const crBin = (() => { try { execSync("cr --version", { stdio: "pipe" }); return "cr"; } catch { return "coderabbit"; } })();
+
+  const numWidth = String(ready.length).length;
+  const results = [];
+
+  for (let i = 0; i < ready.length; i++) {
+    const { localRepo, primary } = ready[i];
+    const idx = `[${String(i + 1).padStart(numWidth)}/${ready.length}]`;
+
+    // Print a header so the user knows which repo is being reviewed
+    console.log(
+      boxen(
+        p.muted(idx) + "  " + chalk.bold(p.white(localRepo.name)) + "  " + colorBranch(primary),
+        { padding: { top: 0, bottom: 0, left: 2, right: 2 }, borderStyle: "round", borderColor: "#334155" },
+      ),
+    );
+    console.log();
+
+    // 1. Switch to the primary (feature) branch
+    try {
+      execSync(`git switch ${primary}`, { cwd: localRepo.repo, stdio: "pipe" });
+    } catch {
+      // already on branch or switch failed — continue anyway
+    }
+
+    // 2. Run cr --base <defaultBaseBranch> --prompt-only
+    //    This reviews all commits on primaryBranch that aren't on baseBranch
+    const exitCode = await new Promise((resolve) => {
+      const child = spawn(crBin, ["--base", baseBranch, "--prompt-only"], {
+        cwd: localRepo.repo,
+        stdio: "inherit",
+        shell: false,
+      });
+      child.on("close", (code) => resolve(code ?? 0));
+      child.on("error", () => resolve(1));
+    });
+
+    const ok = exitCode === 0;
+    results.push({ name: localRepo.name, ok });
+    console.log(
+      "  " + (ok ? p.green("✔") : p.red("✘")) +
+      "  " + chalk.bold(p.white(localRepo.name)) +
+      "  " + (ok ? p.green("review complete") : p.red("review failed")) + "\n",
+    );
+  }
+
+  // Final summary
+  const passed = results.filter((r) => r.ok).length;
+  const failed = results.filter((r) => !r.ok).length;
+  const summaryParts = [];
+  if (passed) summaryParts.push(chalk.bold(p.green(`✔  ${passed} complete`)));
+  if (failed) summaryParts.push(p.red(`✘  ${failed} failed`));
+  console.log(
+    boxen(
+      summaryParts.join(p.slate("   ·   ")) + "\n" + p.muted(`${ready.length} repo${ready.length !== 1 ? "s" : ""} reviewed`),
+      { padding: { top: 0, bottom: 0, left: 2, right: 2 }, borderStyle: "round", borderColor: failed > 0 ? "#f87171" : "#4ade80" },
+    ),
+  );
+  console.log();
+}
+
 // ── Main portal command ────────────────────────────────────────────────────────
 
 export async function cmdPortal(repos, {
@@ -770,6 +907,7 @@ export async function cmdPortal(repos, {
   checkout:         cliCheckout  = false, // --checkout
   createMr:         cliCreateMr  = false, // --create-mr
   createIssue:      cliCreateIssue = false, // --create-issue
+  review:           cliReview    = false, // --review
   // shared
   target:           cliTarget       = null, // --target
   title:            cliTitle        = null, // --title (MR)
@@ -787,6 +925,8 @@ export async function cmdPortal(repos, {
   // auto-confirm
   yes:              autoConfirm         = false,
 } = {}) {
+  // Detect CodeRabbit CLI once up front
+  const crAvailable = isCrAvailable();
   const config = loadConfig();
   const portalConfig = config.portal ?? {};
 
@@ -923,7 +1063,7 @@ export async function cmdPortal(repos, {
   // ── Non-interactive dispatch ─────────────────────────────────────────────────
   // When any action flag is set, resolve the epic (if --epic provided) and dispatch
   // directly without showing any menus.
-  const hasCliAction = cliEpic || cliCheckout || cliCreateMr || cliCreateIssue;
+  const hasCliAction = cliEpic || cliCheckout || cliCreateMr || cliCreateIssue || cliReview;
   if (hasCliAction) {
     let resolvedEpic = null;
 
@@ -962,6 +1102,27 @@ export async function cmdPortal(repos, {
 
       if (cliCheckout) {
         return await cmdEpicCheckout(epicIssues, glabRepos, { autoConfirm });
+      }
+
+      if (cliReview) {
+        if (!crAvailable) {
+          console.log(
+            boxen(
+              chalk.bold(p.yellow("CodeRabbit CLI not found")) + "\n\n" +
+              p.muted("Install with: ") + p.cyan("curl -fsSL https://cli.coderabbit.ai/install.sh | sh") + "\n" +
+              p.muted("Then authenticate: ") + p.cyan("cr auth login"),
+              {
+                padding: { top: 1, bottom: 1, left: 3, right: 3 },
+                borderStyle: "round",
+                borderColor: "#fbbf24",
+                title: p.yellow(" missing dependency "),
+                titleAlignment: "center",
+              },
+            ),
+          );
+          return 1;
+        }
+        return await cmdEpicCrReview(epicIssues, glabRepos, portalConfig);
       }
 
       if (cliCreateMr) {
@@ -1202,6 +1363,11 @@ export async function cmdPortal(repos, {
               name: p.purple("⊞  Create MRs for epic"),
               description: p.muted("open a merge request per issue from each primary branch"),
             }] : []),
+            ...(hasIssues && hasLocalHit && crAvailable ? [{
+              value: "review",
+              name: p.yellow("◎  Review with CodeRabbit"),
+              description: p.muted("run cr --base <primary> on each issue's local repo"),
+            }] : []),
             {
               value: "create",
               name: p.green("+ Create new issue"),
@@ -1232,6 +1398,12 @@ export async function cmdPortal(repos, {
         // Checkout all repos to their primary branches
         if (action === "checkout") {
           await cmdEpicCheckout(epicIssues, glabRepos, { autoConfirm });
+          continue issueLoop;
+        }
+
+        // Review all issues in this epic with CodeRabbit
+        if (action === "review") {
+          await cmdEpicCrReview(epicIssues, glabRepos, portalConfig);
           continue issueLoop;
         }
 
