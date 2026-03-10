@@ -42,7 +42,7 @@ function checkRequiredDeps() {
     console.log(
       boxen(
         chalk.bold(p.red("git not found")) + "\n\n" +
-        p.white("gitportal requires git. Install it:\n\n") +
+        p.white("gitplex requires git. Install it:\n\n") +
         installLines,
         {
           padding:        { top: 1, bottom: 1, left: 3, right: 3 },
@@ -167,11 +167,11 @@ export async function main() {
   process.on("SIGTERM", () => { console.log("\n\n" + p.muted("  Terminated.") + "\n"); process.exit(0); });
 
   const opts = parseArgs(process.argv.slice(2));
-  if (opts.debug) process.env.GITPORTAL_DEBUG = "1";  // set before any module uses it
+  if (opts.debug) process.env.GITPLEX_DEBUG = "1";  // set before any module uses it
   const config = loadConfig();
 
   if (opts.version) {
-    console.log(`gitportal v${VERSION}`);
+    console.log(`gitplex v${VERSION}`);
     return 0;
   }
 
