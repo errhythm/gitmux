@@ -1,11 +1,11 @@
 import { execFileAsync, extractMsg } from "../utils/exec.js";
 
-const DEBUG = () => process.env.GSYNC_DEBUG === "1";
+const DEBUG = () => process.env.GITPORTAL_DEBUG === "1";
 
 function dbg(label, value) {
   if (!DEBUG()) return;
   process.stderr.write(
-    `\n\x1b[35m[gsync:debug] ${label}\x1b[0m\n${typeof value === "string" ? value : JSON.stringify(value, null, 2)
+    `\n\x1b[35m[gitportal:debug] ${label}\x1b[0m\n${typeof value === "string" ? value : JSON.stringify(value, null, 2)
     }\n`,
   );
 }

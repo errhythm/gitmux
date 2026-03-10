@@ -1,10 +1,11 @@
 {
-  "name": "@rhythm/gsync",
+  "name": "gitportal",
   "version": "1.6.2",
   "description": "Multi-repo Git & GitLab workflow CLI — switch branches, manage epics & issues, create MRs, all from the terminal",
   "type": "module",
   "bin": {
-    "gsync": "bin/gsync.js"
+    "gitportal": "bin/gitportal.js",
+    "gp": "bin/gitportal.js"
   },
   "files": [
     "bin",

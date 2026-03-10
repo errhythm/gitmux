@@ -959,7 +959,7 @@ export async function cmdPortal(repos, {
     console.log(
       boxen(
         chalk.bold(p.red("glab not found")) + "\n\n" +
-        p.white((platform ? `gsync requires the GitLab CLI. Install it on ${platform}:\n\n` : "gsync requires the GitLab CLI:\n\n")) +
+        p.white((platform ? `gitportal requires the GitLab CLI. Install it on ${platform}:\n\n` : "gitportal requires the GitLab CLI:\n\n")) +
         installLines + "\n\n" +
         p.white("Then authenticate:\n\n") +
         p.muted("  ") + p.cyan("glab auth login") + p.muted("   (follow the prompts to connect your GitLab account)") + "\n" +
