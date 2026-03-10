@@ -38,10 +38,12 @@ Made by E.R.Rhythm.
 ## Installation
 
 ```bash
-npm install -g @rhythm/gitmux
+npm install -g @errhythm/gitmux
 ```
 
 *(Requires Node.js 18+)*
+
+Both `gitmux` and the shorter alias `gmux` are available after install.
 
 ## Usage
 
