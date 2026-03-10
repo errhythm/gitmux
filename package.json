@@ -11,6 +11,10 @@
     "bin",
     "src"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/errhythm/gitmux.git"
+  },
   "engines": {
     "node": ">=22.13.0"
   },
