@@ -17,6 +17,7 @@ import {
   isGitLabRemote,
   detectGroupFromRepos,
   getProjectPath,
+  getDefaultBranch,
   slugify,
 } from "../gitlab/helpers.js";
 import { loadConfig, saveConfig } from "../config/index.js";
@@ -264,6 +265,11 @@ async function cmdIssueView(issue, glabRepos = [], portalConfig = {}) {
         description: p.muted("MR from ") + colorBranch(currentPrimary) + p.muted(" → default base branch"),
       }] : []),
       {
+        value: "createBranch",
+        name: p.green("+  Create branch"),
+        description: p.muted("create a new branch for this issue"),
+      },
+      {
         value: "open",
         name: p.teal("⊕  View in GitLab"),
         description: p.muted(issue.web_url ?? ""),
@@ -283,6 +289,63 @@ async function cmdIssueView(issue, glabRepos = [], portalConfig = {}) {
   // Create MR from primary branch
   if (issueAction === "mr") {
     await cmdIssueMr(issue, glabRepos, portalConfig);
+    return;
+  }
+
+  // Create a new branch for this issue
+  if (issueAction === "createBranch") {
+    const localRepo = findLocalRepo(glabRepos, projectPath);
+    const projectDefaultBranch = localRepo ? getDefaultBranch(localRepo.repo) : null;
+    const defaultBranchName = `feature/${localIid}-${slugify(issue.title)}`;
+
+    const { branchName } = await enquirer.prompt({
+      type: "input",
+      name: "branchName",
+      message: p.white("Branch name:"),
+      initial: defaultBranchName,
+      validate: (v) => v.trim() !== "" || "Branch name cannot be empty",
+    });
+
+    const { baseBranchName } = await enquirer.prompt({
+      type: "input",
+      name: "baseBranchName",
+      message: p.white("Base branch:"),
+      initial: projectDefaultBranch || portalConfig.defaultBaseBranch || "develop",
+      validate: (v) => v.trim() !== "" || "Base branch cannot be empty",
+    });
+
+    const enc = encodeURIComponent(projectPath);
+    process.stdout.write("  " + p.muted("Creating branch…\r"));
+    try {
+      await glabApi(`projects/${enc}/repository/branches`, {
+        method: "POST",
+        fields: { branch: branchName.trim(), ref: baseBranchName.trim() },
+      });
+      process.stdout.write(" ".repeat(40) + "\r");
+      console.log(
+        boxen(
+          chalk.bold(p.green("✔  Branch created")) + "  " + colorBranch(branchName.trim()),
+          { padding: { top: 0, bottom: 0, left: 2, right: 2 }, borderStyle: "round", borderColor: "#4ade80" },
+        ),
+      );
+      // Auto-set as primary if none is set yet
+      const cfgNow = loadConfig();
+      const pb = cfgNow.portal?.primaryBranches ?? {};
+      if (!pb[configKey]) {
+        pb[configKey] = branchName.trim();
+        saveConfig({ ...cfgNow, portal: { ...cfgNow.portal, primaryBranches: pb } });
+        console.log("  " + p.teal("★") + "  " + p.muted("Set as primary branch"));
+      }
+    } catch (e) {
+      process.stdout.write(" ".repeat(40) + "\r");
+      console.log(
+        boxen(
+          chalk.bold(p.red("Branch creation failed")) + "\n\n" + p.muted(e.message.slice(0, 80)),
+          { padding: { top: 0, bottom: 0, left: 2, right: 2 }, borderStyle: "round", borderColor: "#f87171" },
+        ),
+      );
+    }
+    console.log();
     return;
   }
 
@@ -477,62 +540,62 @@ async function cmdEpicMr(epicIssues, glabRepos, portalConfig, { autoConfirm = fa
       console.log();
     }
   } else {
-  // Multi-select: all ready repos pre-selected, space to toggle, Esc to go back
-  const choices = ready.map((c) => ({
-    name: c.localRepo.name,
-    value: c.localRepo.name,
-    message: chalk.bold(p.white(c.localRepo.name)) + "  " + colorBranch(c.primary),
-    hint: "",
-    enabled: true,  // pre-select all
-  }));
+    // Multi-select: all ready repos pre-selected, space to toggle, Esc to go back
+    const choices = ready.map((c) => ({
+      name: c.localRepo.name,
+      value: c.localRepo.name,
+      message: chalk.bold(p.white(c.localRepo.name)) + "  " + colorBranch(c.primary),
+      hint: "",
+      enabled: true,  // pre-select all
+    }));
 
-  const selectedNames = await enquirer.autocomplete({
-    name: "repos",
-    message: "Select repos to create MRs for:",
-    multiple: true,
-    initial: 0,
-    limit: 12,
-    choices,
-    symbols: { indicator: { on: "◉", off: "◯" } },
-    footer() { return p.muted("space to toggle · type to filter · enter to confirm · esc to go back"); },
-    suggest(input = "", allChoices = []) {
-      const term = (input ?? "").toLowerCase().trim();
-      const selected = allChoices.filter((c) => c.enabled);
-      const unselected = allChoices.filter((c) => !c.enabled);
-      const filtered = term ? unselected.filter((c) => c.value.toLowerCase().includes(term)) : unselected;
-      return [...selected, ...filtered];
-    },
-  }).catch(() => "__back__");
+    const selectedNames = await enquirer.autocomplete({
+      name: "repos",
+      message: "Select repos to create MRs for:",
+      multiple: true,
+      initial: 0,
+      limit: 12,
+      choices,
+      symbols: { indicator: { on: "◉", off: "◯" } },
+      footer() { return p.muted("space to toggle · type to filter · enter to confirm · esc to go back"); },
+      suggest(input = "", allChoices = []) {
+        const term = (input ?? "").toLowerCase().trim();
+        const selected = allChoices.filter((c) => c.enabled);
+        const unselected = allChoices.filter((c) => !c.enabled);
+        const filtered = term ? unselected.filter((c) => c.value.toLowerCase().includes(term)) : unselected;
+        return [...selected, ...filtered];
+      },
+    }).catch(() => "__back__");
 
-  console.log();
-  if (selectedNames === "__back__" || !Array.isArray(selectedNames) || selectedNames.length === 0) {
-    if (selectedNames !== "__back__") console.log("  " + p.muted("Nothing selected.\n"));
-    return;
-  }
+    console.log();
+    if (selectedNames === "__back__" || !Array.isArray(selectedNames) || selectedNames.length === 0) {
+      if (selectedNames !== "__back__") console.log("  " + p.muted("Nothing selected.\n"));
+      return;
+    }
 
-  selectedReady = selectedNames
-    .map((name) => ready.find((c) => c.localRepo.name === name))
-    .filter(Boolean);
+    selectedReady = selectedNames
+      .map((name) => ready.find((c) => c.localRepo.name === name))
+      .filter(Boolean);
   } // end autoConfirm / interactive split
 
   // Shared options — prompt once for all (skip prompts when auto-confirming)
   const targetBranch = autoConfirm
     ? (portalConfig.defaultBaseBranch ?? "develop")
     : (await enquirer.prompt({
-        type: "input",
-        name: "targetBranch",
-        message: p.white("Target branch") + p.muted(" (for all):"),
-        initial: portalConfig.defaultBaseBranch ?? "develop",
-        validate: (v) => v.trim() !== "" || "Required",
-      })).targetBranch;
+      type: "input",
+      name: "targetBranch",
+      message: p.white("Target branch") + p.muted(" (for all):"),
+      initial: portalConfig.defaultBaseBranch ?? "develop",
+      validate: (v) => v.trim() !== "" || "Required",
+    })).targetBranch;
 
   const labels = autoConfirm
     ? (portalConfig.defaultLabels ?? "")
     : await input({
-        message: p.white("Labels") + p.muted(" (optional, applied to all):"),
-        default: portalConfig.defaultLabels ?? "",
-        theme: { ...THEME, style: { ...THEME.style, answer: (s) => p.purple(s) } },
-      });
+      message: p.white("Labels") + p.muted(" (optional, applied to all):"),
+      default: portalConfig.defaultLabels ?? "",
+      theme: { ...THEME, style: { ...THEME.style, answer: (s) => p.purple(s) } },
+    });
 
   const isDraft = autoConfirm
     ? false
@@ -547,9 +610,9 @@ async function cmdEpicMr(epicIssues, glabRepos, portalConfig, { autoConfirm = fa
   const confirmed = autoConfirm
     ? true
     : await confirm({
-        message: p.white("Create ") + p.cyan(String(selectedReady.length)) + p.white(` MR${selectedReady.length !== 1 ? "s" : ""}?`),
-        default: true, theme: THEME,
-      });
+      message: p.white("Create ") + p.cyan(String(selectedReady.length)) + p.white(` MR${selectedReady.length !== 1 ? "s" : ""}?`),
+      default: true, theme: THEME,
+    });
   console.log();
   if (!confirmed) return;
 
@@ -753,10 +816,10 @@ async function cmdEpicCheckout(epicIssues, glabRepos, { autoConfirm = false } = 
   const confirmed = autoConfirm
     ? true
     : await confirm({
-        message: p.white("Checkout ") + p.cyan(String(checkouts.length)) + p.white(" repo" + (checkouts.length !== 1 ? "s" : "") + "?"),
-        default: true,
-        theme: THEME,
-      });
+      message: p.white("Checkout ") + p.cyan(String(checkouts.length)) + p.white(" repo" + (checkouts.length !== 1 ? "s" : "") + "?"),
+      default: true,
+      theme: THEME,
+    });
   console.log();
   if (!confirmed) return;
 
@@ -901,29 +964,29 @@ async function cmdEpicCrReview(epicIssues, glabRepos, portalConfig = {}) {
 // ── Main portal command ────────────────────────────────────────────────────────
 
 export async function cmdPortal(repos, {
-  settings    = false,
+  settings = false,
   // ── non-interactive opts ────────────────────────────────────────────────────────────
-  epic:             cliEpic      = null,  // --epic <iid>
-  checkout:         cliCheckout  = false, // --checkout
-  createMr:         cliCreateMr  = false, // --create-mr
-  createIssue:      cliCreateIssue = false, // --create-issue
-  review:           cliReview    = false, // --review
+  epic: cliEpic = null,  // --epic <iid>
+  checkout: cliCheckout = false, // --checkout
+  createMr: cliCreateMr = false, // --create-mr
+  createIssue: cliCreateIssue = false, // --create-issue
+  review: cliReview = false, // --review
   // shared
-  target:           cliTarget       = null, // --target
-  title:            cliTitle        = null, // --title (MR)
-  description:      cliDescription  = null,
-  labels:           cliLabels       = null,
-  draft:            cliDraft        = false,
-  noPush:           cliNoPush       = false,
+  target: cliTarget = null, // --target
+  title: cliTitle = null, // --title (MR)
+  description: cliDescription = null,
+  labels: cliLabels = null,
+  draft: cliDraft = false,
+  noPush: cliNoPush = false,
   // issue creation
-  issueProject:     cliIssueProject     = null,
-  issueTitle:       cliIssueTitle       = null,
+  issueProject: cliIssueProject = null,
+  issueTitle: cliIssueTitle = null,
   issueDescription: cliIssueDescription = null,
-  issueLabels:      cliIssueLabels      = null,
-  branchName:       cliBranchName       = null,
-  baseBranch:       cliBaseBranch       = null,
+  issueLabels: cliIssueLabels = null,
+  branchName: cliBranchName = null,
+  baseBranch: cliBaseBranch = null,
   // auto-confirm
-  yes:              autoConfirm         = false,
+  yes: autoConfirm = false,
 } = {}) {
   // Detect CodeRabbit CLI once up front
   const crAvailable = isCrAvailable();
@@ -933,28 +996,28 @@ export async function cmdPortal(repos, {
   try {
     execSync("glab version", { encoding: "utf8", stdio: "pipe" });
   } catch {
-    const isMac   = process.platform === "darwin";
-    const isWin   = process.platform === "win32";
+    const isMac = process.platform === "darwin";
+    const isWin = process.platform === "win32";
     const isLinux = process.platform === "linux";
 
     const platform = isMac ? "macOS" : isWin ? "Windows" : isLinux ? "Linux" : null;
 
     const installLines = isMac
       ? p.muted("  brew     ") + p.cyan("brew install glab") + "\n" +
-        p.muted("  MacPorts ") + p.cyan("sudo port install glab") + "\n" +
-        p.muted("  asdf     ") + p.cyan("asdf plugin add glab && asdf install glab latest")
+      p.muted("  MacPorts ") + p.cyan("sudo port install glab") + "\n" +
+      p.muted("  asdf     ") + p.cyan("asdf plugin add glab && asdf install glab latest")
       : isWin
-      ? p.muted("  winget   ") + p.cyan("winget install glab.glab") + "\n" +
+        ? p.muted("  winget   ") + p.cyan("winget install glab.glab") + "\n" +
         p.muted("  choco    ") + p.cyan("choco install glab") + "\n" +
         p.muted("  scoop    ") + p.cyan("scoop install glab") + "\n" +
         p.muted("  brew     ") + p.cyan("brew install glab") + p.muted("  (via WSL)")
-      : isLinux
-      ? p.muted("  brew     ") + p.cyan("brew install glab") + "\n" +
-        p.muted("  snap     ") + p.cyan("sudo snap install glab && sudo snap connect glab:ssh-keys") + "\n" +
-        p.muted("  apt      ") + p.cyan("sudo apt install glab") + p.muted("  (WakeMeOps repo)") + "\n" +
-        p.muted("  pacman   ") + p.cyan("pacman -S glab") + "\n" +
-        p.muted("  dnf      ") + p.cyan("dnf install glab")
-      : p.muted("  ") + p.cyan("https://gitlab.com/gitlab-org/cli#installation");
+        : isLinux
+          ? p.muted("  brew     ") + p.cyan("brew install glab") + "\n" +
+          p.muted("  snap     ") + p.cyan("sudo snap install glab && sudo snap connect glab:ssh-keys") + "\n" +
+          p.muted("  apt      ") + p.cyan("sudo apt install glab") + p.muted("  (WakeMeOps repo)") + "\n" +
+          p.muted("  pacman   ") + p.cyan("pacman -S glab") + "\n" +
+          p.muted("  dnf      ") + p.cyan("dnf install glab")
+          : p.muted("  ") + p.cyan("https://gitlab.com/gitlab-org/cli#installation");
 
     console.log(
       boxen(
@@ -1110,13 +1173,13 @@ export async function cmdPortal(repos, {
     // --create-mr via portal (non-interactive MR command)
     if (cliCreateMr && !cliEpic) {
       return await cmdMr(repos, {
-        target:      cliTarget,
-        title:       cliTitle,
+        target: cliTarget,
+        title: cliTitle,
         description: cliDescription,
-        labels:      cliLabels,
-        draft:       cliDraft,
-        noPush:      cliNoPush,
-        yes:         autoConfirm,
+        labels: cliLabels,
+        draft: cliDraft,
+        noPush: cliNoPush,
+        yes: autoConfirm,
       });
     }
 
@@ -1155,8 +1218,8 @@ export async function cmdPortal(repos, {
         // Bulk epic MR — override shared options in portalConfig for non-interactive
         const mergedPortalConfig = {
           ...portalConfig,
-          ...(cliTarget  ? { defaultBaseBranch: cliTarget } : {}),
-          ...(cliLabels  ? { defaultLabels: cliLabels }     : {}),
+          ...(cliTarget ? { defaultBaseBranch: cliTarget } : {}),
+          ...(cliLabels ? { defaultLabels: cliLabels } : {}),
         };
         return await cmdEpicMr(epicIssues, glabRepos, mergedPortalConfig, { autoConfirm });
       }
@@ -1297,13 +1360,13 @@ export async function cmdPortal(repos, {
 
     if (section === "mr") {
       const r = await cmdMr(repos, {
-        target:      cliTarget,
-        title:       cliTitle,
+        target: cliTarget,
+        title: cliTitle,
         description: cliDescription,
-        labels:      cliLabels,
-        draft:       cliDraft,
-        noPush:      cliNoPush,
-        yes:         autoConfirm,
+        labels: cliLabels,
+        draft: cliDraft,
+        noPush: cliNoPush,
+        yes: autoConfirm,
       });
       if (r !== "__back__") return r;
       continue portalHome;
@@ -1657,11 +1720,12 @@ export async function cmdPortal(repos, {
             validate: (v) => v.trim() !== "" || "Branch name cannot be empty",
           });
 
+          const projectDefaultBranch = getDefaultBranch(projectChoice.repo);
           const { baseBranchName } = await enquirer.prompt({
             type: "input",
             name: "baseBranchName",
             message: p.white("Base branch:"),
-            initial: portalConfig.defaultBaseBranch ?? "develop",
+            initial: projectDefaultBranch || portalConfig.defaultBaseBranch || "develop",
             validate: (v) => v.trim() !== "" || "Base branch cannot be empty",
           });
 
