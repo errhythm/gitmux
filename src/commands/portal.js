@@ -1240,14 +1240,8 @@ async function cmdEpicCheckout(
   console.log();
   if (!confirmed) return;
 
-  // Phase 3 — fetch then switch
+  // Phase 3 — switch (fetch only if the branch isn't available locally yet)
   for (const { localRepo, branchName } of checkouts) {
-    // Fetch the branch from origin first so it's available locally even if it
-    // was never checked out on this machine.
-    await execFileAsync("git", ["fetch", "origin", branchName], {
-      cwd: localRepo.repo,
-    }).catch(() => {}); // silence fetch errors — switch will surface the real problem
-
     try {
       await execFileAsync("git", ["switch", branchName], {
         cwd: localRepo.repo,
@@ -1259,17 +1253,35 @@ async function cmdEpicCheckout(
           p.white(localRepo.name.padEnd(24)) +
           colorBranch(branchName),
       );
-    } catch (e) {
-      const msg = (
-        (e.stderr || e.message || "").toString().split("\n")[0] ?? ""
-      ).trim();
-      console.log(
-        "  " +
-          p.red("✖") +
+    } catch {
+      // Branch not available locally — fetch from origin and retry once.
+      await execFileAsync("git", ["fetch", "origin", branchName], {
+        cwd: localRepo.repo,
+      }).catch(() => {});
+
+      try {
+        await execFileAsync("git", ["switch", branchName], {
+          cwd: localRepo.repo,
+        });
+        console.log(
           "  " +
-          p.white(localRepo.name.padEnd(24)) +
-          p.muted(msg.slice(0, 55)),
-      );
+            p.green("✔") +
+            "  " +
+            p.white(localRepo.name.padEnd(24)) +
+            colorBranch(branchName),
+        );
+      } catch (e2) {
+        const msg = (
+          (e2.stderr || e2.message || "").toString().split("\n")[0] ?? ""
+        ).trim();
+        console.log(
+          "  " +
+            p.red("✖") +
+            "  " +
+            p.white(localRepo.name.padEnd(24)) +
+            p.muted(msg.slice(0, 55)),
+        );
+      }
     }
   }
   console.log();
